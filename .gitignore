@@ -121,6 +121,9 @@ build/
 *.cpp.o
 *.cpp.d
 
+#Arduino files
+*.ino
+
 # Arduino specific folders
 __MACOSX/
 .DS_Store
