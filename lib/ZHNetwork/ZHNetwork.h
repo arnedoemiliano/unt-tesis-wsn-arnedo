@@ -3,15 +3,10 @@
 
 #include "Arduino.h"
 #include <queue>
-#if defined(ESP8266)
-#include "ESP8266WiFi.h"
-#include "espnow.h"
-#endif
-#if defined(ESP32)
 #include "WiFi.h"
 #include "esp_wifi.h"
 #include "esp_now.h"
-#endif
+
 
 //#define PRINT_LOG // Uncomment to display to serial port the full operation log.
 
@@ -94,6 +89,7 @@ public:
     ZHNetwork &setOnUnicastReceivingCallback(on_message_t onUnicastReceivingCallback);
     ZHNetwork &setOnConfirmReceivingCallback(on_confirm_t onConfirmReceivingCallback);
 
+
     error_code_t begin(const char *netName = "", const bool gateway = false);
 
     uint16_t sendBroadcastMessage(const char *data);
@@ -140,15 +136,10 @@ private:
     uint16_t maxTimeForRoutingInfoWaiting_{500};
     uint32_t lastMessageSentTime{0};
 
-#if defined(ESP8266)
-    static void onDataSent(uint8_t *mac, uint8_t status);
-    static void onDataReceive(uint8_t *mac, uint8_t *data, uint8_t length);
-#endif
-#if defined(ESP32)
+
     static void onDataSent(const uint8_t *mac, esp_now_send_status_t status);
     //static void onDataReceive(const uint8_t *mac, const uint8_t *data, int length);
-    static void onDataReceive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int length);
-#endif
+    static void onDataReceive(const uint8_t *mac_addr, const uint8_t *data, int length);
     uint16_t broadcastMessage(const char *data, const uint8_t *target, message_type_t type);
     uint16_t unicastMessage(const char *data, const uint8_t *target, const uint8_t *sender, message_type_t type);
     on_message_t onBroadcastReceivingCallback;

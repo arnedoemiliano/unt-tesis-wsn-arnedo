@@ -35,26 +35,17 @@ ZHNetwork &ZHNetwork::setOnConfirmReceivingCallback(on_confirm_t onConfirmReceiv
 
 error_code_t ZHNetwork::begin(const char *netName, const bool gateway)
 {
-#if defined(ESP8266)
-    randomSeed(os_random());
-#endif
-#if defined(ESP32)
+
     randomSeed(esp_random());
-#endif
+
     if (strlen(netName) >= 1 && strlen(netName) <= 20)
         strcpy(netName_, netName);
 #ifdef PRINT_LOG
     Serial.begin(115200);
 #endif
-    WiFi.mode(gateway ? WIFI_AP_STA : WIFI_STA);
+    WiFi.mode(gateway ? WIFI_AP_STA : WIFI_STA); //gateway=true -> WIFI_AP_STA, gateway = false -> WIFI_STA
     esp_now_init();
-#if defined(ESP8266)
-    wifi_get_macaddr(gateway ? SOFTAP_IF : STATION_IF, localMAC);
-    esp_now_set_self_role(ESP_NOW_ROLE_COMBO);
-#endif
-#if defined(ESP32)
     esp_wifi_get_mac(gateway ? (wifi_interface_t)ESP_IF_WIFI_AP : (wifi_interface_t)ESP_IF_WIFI_STA, localMAC);
-#endif
     esp_now_register_send_cb(onDataSent);
     esp_now_register_recv_cb(onDataReceive);
     return SUCCESS;
@@ -76,16 +67,15 @@ void ZHNetwork::maintenance()
     {
         sentMessageSemaphore = false;
         confirmReceivingSemaphore = false;
-        if (confirmReceiving)
+        if (confirmReceiving) // 
         {
 #ifdef PRINT_LOG
             Serial.println(F("OK."));
 #endif
             outgoing_data_t outgoingData = queueForOutgoingData.front();
             queueForOutgoingData.pop();
-#if defined(ESP32)
             esp_now_del_peer(outgoingData.intermediateTargetMAC);
-#endif
+
             if (onConfirmReceivingCallback && macToString(outgoingData.transmittedData.originalSenderMAC) == macToString(localMAC) && outgoingData.transmittedData.messageType == BROADCAST)
                 onConfirmReceivingCallback(outgoingData.transmittedData.originalTargetMAC, outgoingData.transmittedData.messageID, true);
             if (macToString(outgoingData.transmittedData.originalSenderMAC) == macToString(localMAC) && outgoingData.transmittedData.messageType == UNICAST_WITH_CONFIRM)
@@ -108,9 +98,8 @@ void ZHNetwork::maintenance()
             {
                 outgoing_data_t outgoingData = queueForOutgoingData.front();
                 queueForOutgoingData.pop();
-#if defined(ESP32)
                 esp_now_del_peer(outgoingData.intermediateTargetMAC);
-#endif
+
                 numberOfAttemptsToSend = 1;
                 for (uint16_t i{0}; i < routingVector.size(); ++i)
                 {
@@ -137,17 +126,16 @@ void ZHNetwork::maintenance()
     if (!queueForOutgoingData.empty() && ((millis() - lastMessageSentTime) > maxWaitingTimeBetweenTransmissions_))
     {
         outgoing_data_t outgoingData = queueForOutgoingData.front();
-#if defined(ESP32)
         esp_now_peer_info_t peerInfo;
         memset(&peerInfo, 0, sizeof(peerInfo));
         memcpy(peerInfo.peer_addr, outgoingData.intermediateTargetMAC, 6);
         peerInfo.channel = 1;
         peerInfo.encrypt = false;
         esp_now_add_peer(&peerInfo);
-#endif
         esp_now_send(outgoingData.intermediateTargetMAC, (uint8_t *)&outgoingData.transmittedData, sizeof(transmitted_data_t));
         lastMessageSentTime = millis();
         sentMessageSemaphore = true;
+
 #ifdef PRINT_LOG
         switch (outgoingData.transmittedData.messageType)
         {
@@ -189,7 +177,7 @@ void ZHNetwork::maintenance()
         criticalProcessSemaphore = false;
         bool forward{false};
         bool routingUpdate{false};
-        switch (incomingData.transmittedData.messageType)
+        switch (incomingData.transmittedData.messageType) //decide que hacer con el mensaje entrante segun su tipo
         {
         case BROADCAST:
 #ifdef PRINT_LOG
@@ -223,7 +211,12 @@ void ZHNetwork::maintenance()
                     if (key_[0])
                         for (uint8_t i{0}; i < strlen(incomingData.transmittedData.message); ++i)
                             incomingData.transmittedData.message[i] = incomingData.transmittedData.message[i] ^ key_[i % strlen(key_)];
-                    onUnicastReceivingCallback(incomingData.transmittedData.message, incomingData.transmittedData.originalSenderMAC);
+                    onUnicastReceivingCallback(incomingData.transmittedData.message, incomingData.transmittedData.originalSenderMAC); //da los valores reales a la funcion de callback
+                }
+                /* Solo para test: avisar cuando el mensaje no haya sido recibido por el originalSender (haya sido reenviado) */
+                /*Solamente lo activará el gateway porque este siempre es el originalTargetMAC*/
+                if (memcmp(incomingData.transmittedData.originalSenderMAC,incomingData.intermediateSenderMAC,6)!=0){
+                    Serial.println("El mensaje recibido fue retransmitido al menos en el último salto");
                 }
             }
             else
@@ -515,24 +508,16 @@ uint16_t ZHNetwork::getMaxWaitingTimeForRoutingInfo()
     return maxTimeForRoutingInfoWaiting_;
 }
 
-#if defined(ESP8266)
-void IRAM_ATTR ZHNetwork::onDataSent(uint8_t *mac, uint8_t status)
-#endif
-#if defined(ESP32)
-    void IRAM_ATTR ZHNetwork::onDataSent(const uint8_t *mac, esp_now_send_status_t status)
-#endif
+void IRAM_ATTR ZHNetwork::onDataSent(const uint8_t *mac, esp_now_send_status_t status)
+
 {
     confirmReceivingSemaphore = true;
     confirmReceiving = status ? false : true;
 }
 
-#if defined(ESP8266)
-void IRAM_ATTR ZHNetwork::onDataReceive(uint8_t *mac, uint8_t *data, uint8_t length)
-#endif
-#if defined(ESP32)
-//void IRAM_ATTR ZHNetwork::onDataReceive(const uint8_t *mac, const uint8_t *data, int length)
-void IRAM_ATTR ZHNetwork::onDataReceive(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, int length)
-#endif
+// void IRAM_ATTR ZHNetwork::onDataReceive(const uint8_t *mac, const uint8_t *data, int length)
+void IRAM_ATTR ZHNetwork::onDataReceive(const uint8_t *mac_addr, const uint8_t *data, int length)
+
 {
     if (criticalProcessSemaphore)
         return;
@@ -566,7 +551,7 @@ void IRAM_ATTR ZHNetwork::onDataReceive(const esp_now_recv_info_t *esp_now_info,
     for (uint8_t i{sizeof(lastMessageID) / 2 - 1}; i >= 1; --i)
         lastMessageID[i] = lastMessageID[i - 1];
     lastMessageID[0] = incomingData.transmittedData.messageID;
-    memcpy(&incomingData.intermediateSenderMAC, esp_now_info->src_addr, 6);
+    memcpy(&incomingData.intermediateSenderMAC, mac_addr, 6);
     queueForIncomingData.push(incomingData);
     criticalProcessSemaphore = false;
 }
