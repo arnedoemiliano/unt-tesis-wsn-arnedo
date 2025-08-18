@@ -12,16 +12,19 @@ SPDX-License-Identifier: MIT
  **/
 // === Includes =============================================================================== //
 #include "ZHNetwork.h"
+#include "sensor.h"
+
 
 // === Constantes y configuraciones iniciales ================================================= //
 
 ZHNetwork myNet;
-
+Sensor sensor;
+float temp;
+uint16_t bat;
 uint64_t messageLastTime{ 0 };  // contador para comparar
-uint16_t messageTimerDelay{ 1000 }; //cada cuanto se envia un mensaje
+uint16_t messageTimerDelay{ 3000 }; //cada cuanto se envia un mensaje
 const uint8_t target[6]{ 0xA4, 0xCF, 0x12, 0x05, 0x1B, 0x64 };  //mac del gateway
-String msg = "";
-//String espMAC; //mac local (WIFI_STA) del micro para testing
+char buffer[sizeof(temp)+sizeof(bat)]; //6 bytes
 
 
 // === Prototipos de funciones ================================================================= //
@@ -37,19 +40,40 @@ void onUnicastReceiving(const char *data, const uint8_t *sender);
 
 void setup() {
     Serial.begin(115200);
+    sensor.initLM35(32); //numero de gpio asociado al adc
+    sensor.initSBat(34);
     Serial.println();
     myNet.begin("ZHNetwork");   //nombre de la red y gateway=false por defecto
     myNet.setOnConfirmReceivingCallback(onConfirmReceiving);    // asignamos la función de callback
     myNet.setOnUnicastReceivingCallback(onUnicastReceiving);
-    msg = "Mensaje enviado desde " + myNet.getNodeMac();
-    //espMAC = myNet.getNodeMac();
+    
+    
+    
 }
 
 // === Loop ==================================================================================== //
 
 void loop() {
     if ((millis() - messageLastTime) > messageTimerDelay) {
-        myNet.sendUnicastMessage(msg.c_str(), target);
+
+        temp = sensor.readTemp();
+        temp = temp*1.31;
+        bat = sensor.readBat();
+
+        memcpy(buffer, &temp, sizeof(temp));
+        memcpy(buffer+sizeof(temp), &bat, sizeof(bat));
+
+        //Envío los datos crudos en una cadena. El gateway ya sabe como tratar la cadena y que tamaño tienen las mediciones.
+        myNet.sendUnicastMessage(buffer, target,0,0); //especifico que envio datos crudos en la cadena buffer
+
+        /* ***TEST***
+        Serial.println();
+        for (size_t i = 0; i < 6; ++i) {
+        Serial.println(buffer[i],HEX);
+        Serial.println();
+        }
+        */
+
         messageLastTime = millis();
 
     }

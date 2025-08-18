@@ -56,9 +56,9 @@ uint16_t ZHNetwork::sendBroadcastMessage(const char *data)
     return broadcastMessage(data, broadcastMAC, BROADCAST);
 }
 
-uint16_t ZHNetwork::sendUnicastMessage(const char *data, const uint8_t *target, const bool confirm)
+uint16_t ZHNetwork::sendUnicastMessage(const char *data, const uint8_t *target, const bool confirm, const bool isText)
 {
-    return unicastMessage(data, target, localMAC, confirm ? UNICAST_WITH_CONFIRM : UNICAST);
+    return unicastMessage(data, target, localMAC, confirm ? UNICAST_WITH_CONFIRM : UNICAST, isText);
 }
 
 void ZHNetwork::maintenance()
@@ -594,7 +594,7 @@ uint16_t ZHNetwork::broadcastMessage(const char *data, const uint8_t *target, me
     return outgoingData.transmittedData.messageID;
 }
 
-uint16_t ZHNetwork::unicastMessage(const char *data, const uint8_t *target, const uint8_t *sender, message_type_t type)
+uint16_t ZHNetwork::unicastMessage(const char *data, const uint8_t *target, const uint8_t *sender, message_type_t type, const bool isText)
 {
     outgoing_data_t outgoingData;
     outgoingData.transmittedData.messageType = type;
@@ -602,7 +602,16 @@ uint16_t ZHNetwork::unicastMessage(const char *data, const uint8_t *target, cons
     memcpy(&outgoingData.transmittedData.netName, &netName_, 20);
     memcpy(&outgoingData.transmittedData.originalTargetMAC, target, 6);
     memcpy(&outgoingData.transmittedData.originalSenderMAC, sender, 6);
-    strcpy(outgoingData.transmittedData.message, data);
+
+    //si lo que envio es un float dentro de un string y hacemos strcpy, se puede cortar el mensaje si detecta un cero en los datos
+    //por eso copiamos con memcpy cuando queremos enviar floats y no cadenas de texto. 
+    if(!isText){
+        memcpy(outgoingData.transmittedData.message, data, 6);
+    }else{
+        strcpy(outgoingData.transmittedData.message, data);
+    }
+
+    
     if (key_[0] && macToString(outgoingData.transmittedData.originalSenderMAC) == macToString(localMAC) && outgoingData.transmittedData.messageType != DELIVERY_CONFIRM_RESPONSE)
         for (uint8_t i{0}; i < strlen(outgoingData.transmittedData.message); ++i)
             outgoingData.transmittedData.message[i] = outgoingData.transmittedData.message[i] ^ key_[i % strlen(key_)];

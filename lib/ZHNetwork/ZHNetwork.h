@@ -93,7 +93,7 @@ public:
     error_code_t begin(const char *netName = "", const bool gateway = false);
 
     uint16_t sendBroadcastMessage(const char *data);
-    uint16_t sendUnicastMessage(const char *data, const uint8_t *target, const bool confirm = false);
+    uint16_t sendUnicastMessage(const char *data, const uint8_t *target, const bool confirm = false, const bool isText = true); //se considera siempre texto a menos que se especifique lo contrario
 
     void maintenance(void);
 
@@ -141,7 +141,7 @@ private:
     //static void onDataReceive(const uint8_t *mac, const uint8_t *data, int length);
     static void onDataReceive(const uint8_t *mac_addr, const uint8_t *data, int length);
     uint16_t broadcastMessage(const char *data, const uint8_t *target, message_type_t type);
-    uint16_t unicastMessage(const char *data, const uint8_t *target, const uint8_t *sender, message_type_t type);
+    uint16_t unicastMessage(const char *data, const uint8_t *target, const uint8_t *sender, message_type_t type, const bool isText = true);
     on_message_t onBroadcastReceivingCallback;
     on_message_t onUnicastReceivingCallback;
     on_confirm_t onConfirmReceivingCallback;

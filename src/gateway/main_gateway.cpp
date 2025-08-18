@@ -23,6 +23,9 @@ void onUnicastReceiving(const char *data, const uint8_t *sender);
 
 // === Variables globales ====================================================================== //
 ZHNetwork myNet;
+char texto[16];
+float temp;
+uint16_t bat;
 
 // === Setup =================================================================================== //
 
@@ -46,9 +49,15 @@ void onUnicastReceiving(const char *data, const uint8_t *sender)
 {
     Serial.print("Unicast message from MAC ");
     Serial.print(myNet.macToString(sender));
-    Serial.println(" received.");
-    Serial.print("Message: ");
-    Serial.println(data);
+    Serial.println(" Recibido.");
+    
+    memcpy(&temp, data, sizeof(temp)); //copiamos los valores binarios del float contenido en data
+    memcpy(&bat, data+sizeof(temp), sizeof(bat));
+    snprintf(texto, sizeof(texto), "%.2f", temp); //convierte el float a texto
+    Serial.print("Temperatura: ");
+    Serial.println(texto);
+    Serial.print("Batería: ");
+    Serial.println(bat);
 }
 
 // === Funciones auxiliares internas =========================================================== //
