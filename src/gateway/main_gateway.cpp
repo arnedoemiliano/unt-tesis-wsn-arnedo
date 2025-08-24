@@ -11,53 +11,139 @@ SPDX-License-Identifier: MIT
  ** lectura de sensores, transmisión de datos y multitarea con FreeRTOS.
  **/
 
-// === Includes ================================================================================ //
-#include <ZHNetwork.h>
-#define PIN_LED 13
+ // === Includes ================================================================================ //
+
+ #include "ZHNetwork.h"
+#include <ArduinoJson.h>
+#include <HTTPClient.h>
 
 // === Constantes y configuraciones iniciales ================================================== //
 
+static const TickType_t NET_MAINT_PERIOD = pdMS_TO_TICKS(50); // 50 ms */
+static QueueHandle_t queuePackets = nullptr; //declaración del handle de la queue a nivel global
+const char* ssid = "CLARO2GHz"; //
+const char* password = "sMoaBFxYV56AMz4j";
 
 // === Prototipos de funciones ================================================================= //
+
 void onUnicastReceiving(const char *data, const uint8_t *sender);
+static void MaintTask(void *); //Ejecuta maintenance que coloca paquetes en cola
+static void BridgeTask(void *); //Saca paquetes de la cola y los envia por HTTP
+void sendToDatacake(const uint8_t* mac, float temperature, float battery); //conversión a JSON y envío POST
 
 // === Variables globales ====================================================================== //
+
 ZHNetwork myNet;
 char texto[16];
-float temp;
-uint16_t bat;
+struct Pkt{     //estructura con los datos de un paquete
+    float temp;
+    uint16_t bat;
+    uint8_t mac[6];
+};
 
 // === Setup =================================================================================== //
 
 void setup() {
     Serial.begin(115200);
-    Serial.println();
-    myNet.begin("ZHNetwork"); //nombre de la red (debe ser el mismo para todos)
-    myNet.setOnUnicastReceivingCallback(onUnicastReceiving); //asignamos la funcion de callback para
-                                                           //cuando llega un mensaje (recibiendo)
+    myNet.begin("ZHNetwork",/*ap+sta*/true);                            //(nombre de la red, modo gateway)
+    myNet.setOnUnicastReceivingCallback(onUnicastReceiving);            //asignamos la funcion de callback para
+    queuePackets = xQueueCreate(16, sizeof(Pkt));                           //cuando llega un mensaje (recibiendo)
+    xTaskCreate(MaintTask, "MaintTask", 4096, nullptr, 2, nullptr);
+    xTaskCreate(BridgeTask, "BridgeTask", 6144, nullptr, 3, nullptr);
+    WiFi.begin(ssid,password);
+    Serial.println("\nConnecting");
+
+    while(WiFi.status() != WL_CONNECTED){
+        Serial.print(".");
+        delay(100);
+    }
+
+    Serial.println("\nConnected to the WiFi network");
 
 }
 
 // === Loop ==================================================================================== //
 
 void loop() {
-    myNet.maintenance();
+}
+
+// === Tasks =================================================================================== //
+//maintenance -> onUnicastReceiving -> queuePackets
+static void MaintTask(void *) {
+    TickType_t next = xTaskGetTickCount();
+    myNet.maintenance(); //se ejecuta una vez antes de pasar al ciclo infinito.
+    for (;;) {
+        vTaskDelayUntil(&next, NET_MAINT_PERIOD);  // 50 ms exactos
+        myNet.maintenance();
+    }
+}
+
+static void BridgeTask(void *){
+    Pkt pkt;
+    String deviceMAC;
+
+    for(;;){
+        // Espera bloqueante: despierta al llegar un paquete
+        if (xQueueReceive(queuePackets, &pkt, portMAX_DELAY) != pdTRUE) continue;
+       
+        sendToDatacake(pkt.mac, pkt.temp, pkt.bat);
+
+        /*TEST
+        snprintf(texto, sizeof(texto), "%.2f", m.temp); //convierte el float a texto
+        Serial.print("Temperatura: ");
+        Serial.println(texto);
+        Serial.print("Batería: ");
+        Serial.println(m.bat); */
+
+    }
+
 }
 
 // === Implementación de funciones ============================================================= //
 void onUnicastReceiving(const char *data, const uint8_t *sender)
 {
+
     Serial.print("Unicast message from MAC ");
     Serial.print(myNet.macToString(sender));
     Serial.println(" Recibido.");
-    
-    memcpy(&temp, data, sizeof(temp)); //copiamos los valores binarios del float contenido en data
-    memcpy(&bat, data+sizeof(temp), sizeof(bat));
+
+    Pkt pkt;
+
+    memcpy(&pkt.temp, data, sizeof(pkt.temp)); //copiamos los valores binarios del float contenido en data
+    memcpy(&pkt.bat, data+sizeof(pkt.temp), sizeof(pkt.bat));
+    memcpy(&pkt.mac, sender, 6);
+
+    if(xQueueSend(queuePackets, &pkt, 0)!=pdTRUE){
+        Serial.print("Error en la colocación del paquete en cola");
+    }
+
+    /* 
+    TEST
     snprintf(texto, sizeof(texto), "%.2f", temp); //convierte el float a texto
     Serial.print("Temperatura: ");
     Serial.println(texto);
     Serial.print("Batería: ");
-    Serial.println(bat);
+    Serial.println(bat); */
+}
+
+void sendToDatacake(const uint8_t* mac, float temperature, float battery) {
+    // Crear documento JSON
+    JsonDocument doc;
+    doc["device"]      = "bbaf51c9-df26-4c5d-ac67-9ea9cf11188d"; //serial del device datacake
+    doc["temperature"] = temperature;
+    doc["battery"]     = battery;
+    doc["sender"]      = myNet.macToString(mac);
+
+    String payload;
+    serializeJson(doc, payload);
+
+    // Enviar por HTTP POST
+    HTTPClient http;
+    http.begin("https://api.datacake.co/integrations/api/edb2f2b0-d238-4c0c-8b50-ee2c5f10c142/");
+    http.addHeader("Content-Type", "application/json");
+    int httpCode = http.POST(payload);
+    Serial.printf("Datacake response: %d\n", httpCode);
+    http.end();
 }
 
 // === Funciones auxiliares internas =========================================================== //

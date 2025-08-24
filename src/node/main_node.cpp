@@ -10,21 +10,22 @@ SPDX-License-Identifier: MIT
  ** Estructura general del firmware principal. Preparado para integrar funciones específicas como
  ** lectura de sensores, transmisión de datos y multitarea con FreeRTOS.
  **/
-// === Includes =============================================================================== //
+// === Includes y Defines ===================================================================== //
 #include "ZHNetwork.h"
 #include "sensor.h"
+#define PAYLOAD_SIZE 6 //tamaño en bytes del payload (1 uint16_t + 1 float)
+                        //maintenace ya envía la mac origen
 
 
 // === Constantes y configuraciones iniciales ================================================= //
-
+static QueueHandle_t queueMuestras = nullptr; //declaración del handle de la queue a nivel global
+static const TickType_t SENSOR_PERIOD = pdMS_TO_TICKS(5000); // 5 s
+static const TickType_t NET_MAINT_PERIOD = pdMS_TO_TICKS(50); // 50 ms
 ZHNetwork myNet;
 Sensor sensor;
-float temp;
-uint16_t bat;
-uint64_t messageLastTime{ 0 };  // contador para comparar
-uint16_t messageTimerDelay{ 3000 }; //cada cuanto se envia un mensaje
-const uint8_t target[6]{ 0xA4, 0xCF, 0x12, 0x05, 0x1B, 0x64 };  //mac del gateway
-char buffer[sizeof(temp)+sizeof(bat)]; //6 bytes
+const uint8_t target[6]{ 0xA4, 0xCF, 0x12, 0x05, 0x1B, 0x65 };  //mac del gateway
+//char texto[16]; //test
+
 
 
 // === Prototipos de funciones ================================================================= //
@@ -33,8 +34,14 @@ void onConfirmReceiving(const uint8_t *target, const uint16_t id, const bool sta
 //funcion de callback para cuando se recibe un mensaje (receptor)
 void onUnicastReceiving(const char *data, const uint8_t *sender);
 
-// === Variables globales ====================================================================== //
+static void SensorTask(void *); //tarea para la toma de muestras. static -> encapsulada y no accesible por extern en otro archivo.
+static void NetTask(void *); //tarea para envio y recepcion
 
+// === Variables globales ====================================================================== //
+struct Measurement{ //estructura con los datos de muestra
+    float temp;
+    uint16_t bat;
+};
 
 // === Setup =================================================================================== //
 
@@ -43,42 +50,94 @@ void setup() {
     sensor.initLM35(32); //numero de gpio asociado al adc
     sensor.initSBat(34);
     Serial.println();
+    queueMuestras = xQueueCreate(8, PAYLOAD_SIZE); //creamos la queue de hasta 8 elementos de 6 bytes
     myNet.begin("ZHNetwork");   //nombre de la red y gateway=false por defecto
     myNet.setOnConfirmReceivingCallback(onConfirmReceiving);    // asignamos la función de callback
     myNet.setOnUnicastReceivingCallback(onUnicastReceiving);
-    
-    
-    
+    //BaseType_t xTaskCreate(TaskFunction_t pvTaskCode, const char *pcName, uint32_t usStackDepth,
+    //void *pvParameters, UBaseType_t uxPriority, TaskHandle_t *pxCreatedTask)
+    //usStackDepth -> tamaño de la pila para la tarea
+    //*pvParameters -> parametros a pasar a la tarea (ej: static void SensorTask(void *); nada) 
+    xTaskCreate(SensorTask, "SensorTask", 4096, nullptr, 2, nullptr);
+    xTaskCreate(NetTask, "NetTask", 6144, nullptr, 3, nullptr);
+
 }
 
 // === Loop ==================================================================================== //
 
 void loop() {
-    if ((millis() - messageLastTime) > messageTimerDelay) {
 
-        temp = sensor.readTemp();
-        temp = temp*1.31;
-        bat = sensor.readBat();
+}
 
-        memcpy(buffer, &temp, sizeof(temp));
-        memcpy(buffer+sizeof(temp), &bat, sizeof(bat));
+// === Tasks =================================================================================== //
 
-        //Envío los datos crudos en una cadena. El gateway ya sabe como tratar la cadena y que tamaño tienen las mediciones.
-        myNet.sendUnicastMessage(buffer, target,0,0); //especifico que envio datos crudos en la cadena buffer
 
-        /* ***TEST***
-        Serial.println();
-        for (size_t i = 0; i < 6; ++i) {
-        Serial.println(buffer[i],HEX);
-        Serial.println();
+
+static void NetTask(void *) {
+    char buffer[PAYLOAD_SIZE];
+
+    const TickType_t kMaintPeriod = pdMS_TO_TICKS(NET_MAINT_PERIOD);
+    TickType_t nextMaint = xTaskGetTickCount(); //tiempo de mantenimiento
+
+    for (;;) {
+        TickType_t now = xTaskGetTickCount(); //tiempo actual
+        TickType_t untilMaint = (nextMaint - now); // Cuando llega a 0 hay maintenance(). Cálculo seguro ante wrap. Único punto de delay fijo.
+
+        /* Espera hasta que llegue un paquete o se termine el tiempo para maintenance (lo que ocurra primero)
+        
+        (untilMaint > 0) ? untilMaint : 0)
+        Si aún falta tiempo para el próximo mantenimiento (untilMaint > 0) → esperá en la cola hasta esa cantidad de ticks.
+        Si ya se cumplió o pasó el tiempo (untilMaint <= 0) → no espera nada, poné 0 → la llamada a xQueueReceive será no bloqueante 
+        (devuelve de inmediato). */
+        if (xQueueReceive(queueMuestras, buffer, (untilMaint > 0) ? untilMaint : 0) == pdTRUE) {
+            myNet.sendUnicastMessage(buffer, target, /*confirm=*/0, /*isText=*/0);
+            continue; // vuelve a evaluar tiempo restante
         }
-        */
 
-        messageLastTime = millis();
+        /* Si salimos por timeout (no llegó nada), hace maintenance */
+        myNet.maintenance();
+        nextMaint += kMaintPeriod; //se ajusta el nuevo tiempo de mantenimiento
+    }
+
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static void SensorTask(void *){
+    TickType_t last = xTaskGetTickCount();
+
+    for(;;){
+        
+        vTaskDelayUntil(&last,SENSOR_PERIOD); //espera 3 segundos
+        Measurement muestra;
+        muestra.temp = 1.31*sensor.readTemp();
+        muestra.bat = sensor.readBat();
+        /*TEST*/
+        /* snprintf(texto, sizeof(texto), "%.2f", muestra.temp); //convierte el float a texto
+        Serial.print("Temperatura: ");
+        Serial.println(texto);
+        Serial.print("Batería: ");
+        Serial.println(muestra.bat); */
+        /* *** */
+        (void)xQueueSend(queueMuestras, &muestra, 0); //no bloquea la tarea si la queue esta llena
 
     }
 
-    myNet.maintenance();
 }
 
 // === Implementación de funciones ============================================================= //
