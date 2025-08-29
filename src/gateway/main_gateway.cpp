@@ -15,6 +15,7 @@ SPDX-License-Identifier: MIT
 
  #include "ZHNetwork.h"
 #include <ArduinoJson.h>
+#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 
 // === Constantes y configuraciones iniciales ================================================== //
@@ -23,6 +24,8 @@ static const TickType_t NET_MAINT_PERIOD = pdMS_TO_TICKS(50); // 50 ms */
 static QueueHandle_t queuePackets = nullptr; //declaración del handle de la queue a nivel global
 const char* ssid = "CLARO2GHz"; //
 const char* password = "sMoaBFxYV56AMz4j";
+static WiFiClientSecure client;
+static HTTPClient http;
 
 // === Prototipos de funciones ================================================================= //
 
@@ -45,8 +48,8 @@ struct Pkt{     //estructura con los datos de un paquete
 
 void setup() {
     Serial.begin(115200);
-    myNet.begin("ZHNetwork",/*ap+sta*/true);                            //(nombre de la red, modo gateway)
-    myNet.setOnUnicastReceivingCallback(onUnicastReceiving);            //asignamos la funcion de callback para
+    myNet.begin("ZHNetwork",/*ap+sta*/true);                                //(nombre de la red, modo gateway)
+    myNet.setOnUnicastReceivingCallback(onUnicastReceiving);                //asignamos la funcion de callback para
     queuePackets = xQueueCreate(16, sizeof(Pkt));                           //cuando llega un mensaje (recibiendo)
     xTaskCreate(MaintTask, "MaintTask", 4096, nullptr, 2, nullptr);
     xTaskCreate(BridgeTask, "BridgeTask", 6144, nullptr, 3, nullptr);
@@ -57,8 +60,17 @@ void setup() {
         Serial.print(".");
         delay(100);
     }
+    Serial.println("\n***Conectado a la red Wi-Fi***");
+    Serial.printf("STA channel = %d\n", WiFi.channel());
 
-    Serial.println("\nConnected to the WiFi network");
+    client.setInsecure();
+    http.setReuse(true); // habilita HTTP keep-alive
+    if(http.begin(client, "https://api.datacake.co/integrations/api/edb2f2b0-d238-4c0c-8b50-ee2c5f10c142/")){
+        http.addHeader("Content-Type", "application/json");
+        Serial.print("***HTTP begin funciona, conexión inicializada***");
+    }else{
+        Serial.println("***No se pudo establecer la conexión HTTP***");
+    };
 
 }
 
@@ -114,7 +126,18 @@ void onUnicastReceiving(const char *data, const uint8_t *sender)
     memcpy(&pkt.mac, sender, 6);
 
     if(xQueueSend(queuePackets, &pkt, 0)!=pdTRUE){
-        Serial.print("Error en la colocación del paquete en cola");
+        //Encolado incorrecto
+        Serial.print("Error de encolación en xQueueSend: posible cola llena");
+        UBaseType_t used = uxQueueMessagesWaiting(queuePackets);
+        UBaseType_t free = uxQueueSpacesAvailable(queuePackets);
+        Serial.printf("[Q] FULL! used=%u free=%u (drop)\n",
+                      (unsigned)used, (unsigned)free);
+    }else{
+        // Encolado correcto, mostrar ocupación
+        UBaseType_t used = uxQueueMessagesWaiting(queuePackets);
+        UBaseType_t free = uxQueueSpacesAvailable(queuePackets);
+        Serial.printf("[Q] Enqueued OK. used=%u free=%u\n",
+                      (unsigned)used, (unsigned)free);
     }
 
     /* 
@@ -128,6 +151,7 @@ void onUnicastReceiving(const char *data, const uint8_t *sender)
 
 void sendToDatacake(const uint8_t* mac, float temperature, float battery) {
     // Crear documento JSON
+    Serial.println("Entramos a datacake");
     JsonDocument doc;
     doc["device"]      = "bbaf51c9-df26-4c5d-ac67-9ea9cf11188d"; //serial del device datacake
     doc["temperature"] = temperature;
@@ -138,12 +162,11 @@ void sendToDatacake(const uint8_t* mac, float temperature, float battery) {
     serializeJson(doc, payload);
 
     // Enviar por HTTP POST
-    HTTPClient http;
-    http.begin("https://api.datacake.co/integrations/api/edb2f2b0-d238-4c0c-8b50-ee2c5f10c142/");
-    http.addHeader("Content-Type", "application/json");
+
     int httpCode = http.POST(payload);
+    String body = http.getString();
+    Serial.println(body);
     Serial.printf("Datacake response: %d\n", httpCode);
-    http.end();
 }
 
 // === Funciones auxiliares internas =========================================================== //

@@ -54,12 +54,23 @@ void setup() {
     myNet.begin("ZHNetwork");   //nombre de la red y gateway=false por defecto
     myNet.setOnConfirmReceivingCallback(onConfirmReceiving);    // asignamos la función de callback
     myNet.setOnUnicastReceivingCallback(onUnicastReceiving);
+
     //BaseType_t xTaskCreate(TaskFunction_t pvTaskCode, const char *pcName, uint32_t usStackDepth,
     //void *pvParameters, UBaseType_t uxPriority, TaskHandle_t *pxCreatedTask)
     //usStackDepth -> tamaño de la pila para la tarea
     //*pvParameters -> parametros a pasar a la tarea (ej: static void SensorTask(void *); nada) 
     xTaskCreate(SensorTask, "SensorTask", 4096, nullptr, 2, nullptr);
     xTaskCreate(NetTask, "NetTask", 6144, nullptr, 3, nullptr);
+
+    uint8_t pri;
+    wifi_second_chan_t sec ;
+
+    if(esp_wifi_get_channel(&pri, &sec)==ESP_OK){
+        Serial.printf("channel: %u\n", pri); 
+    }else{
+        Serial.println("Interfaz wifi no disponible, no se pudo obtener el canal");
+    }
+      
 
 }
 
@@ -102,22 +113,6 @@ static void NetTask(void *) {
 }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 static void SensorTask(void *){
     TickType_t last = xTaskGetTickCount();
 
@@ -137,7 +132,6 @@ static void SensorTask(void *){
         (void)xQueueSend(queueMuestras, &muestra, 0); //no bloquea la tarea si la queue esta llena
 
     }
-
 }
 
 // === Implementación de funciones ============================================================= //

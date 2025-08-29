@@ -48,6 +48,7 @@ error_code_t ZHNetwork::begin(const char *netName, const bool gateway)
     esp_wifi_get_mac(gateway ? (wifi_interface_t)ESP_IF_WIFI_AP : (wifi_interface_t)ESP_IF_WIFI_STA, localMAC);
     esp_now_register_send_cb(onDataSent);
     esp_now_register_recv_cb(onDataReceive);
+    
     return SUCCESS;
 }
 
