@@ -15,6 +15,7 @@ char ZHNetwork::key_[20]{0};
 uint8_t ZHNetwork::localMAC[6]{0};
 uint16_t ZHNetwork::lastMessageID[10]{0};
 
+
 ZHNetwork &ZHNetwork::setOnBroadcastReceivingCallback(on_message_t onBroadcastReceivingCallback)
 {
     this->onBroadcastReceivingCallback = onBroadcastReceivingCallback;
@@ -45,6 +46,7 @@ error_code_t ZHNetwork::begin(const char *netName, const bool gateway)
 #endif
     WiFi.mode(gateway ? WIFI_AP_STA : WIFI_STA); //gateway=true -> WIFI_AP_STA, gateway = false -> WIFI_STA
     esp_now_init();
+    esp_wifi_set_channel(channelNet, WIFI_SECOND_CHAN_NONE); //forzamos canal 1
     esp_wifi_get_mac(gateway ? (wifi_interface_t)ESP_IF_WIFI_AP : (wifi_interface_t)ESP_IF_WIFI_STA, localMAC);
     esp_now_register_send_cb(onDataSent);
     esp_now_register_recv_cb(onDataReceive);
@@ -52,9 +54,9 @@ error_code_t ZHNetwork::begin(const char *netName, const bool gateway)
     return SUCCESS;
 }
 
-uint16_t ZHNetwork::sendBroadcastMessage(const char *data)
+uint16_t ZHNetwork::sendBroadcastMessage(const char *data, const bool isText, size_t len)
 {
-    return broadcastMessage(data, broadcastMAC, BROADCAST);
+    return broadcastMessage(data, broadcastMAC, BROADCAST, isText, len);
 }
 
 uint16_t ZHNetwork::sendUnicastMessage(const char *data, const uint8_t *target, const bool confirm, const bool isText)
@@ -130,7 +132,7 @@ void ZHNetwork::maintenance()
         esp_now_peer_info_t peerInfo;
         memset(&peerInfo, 0, sizeof(peerInfo));
         memcpy(peerInfo.peer_addr, outgoingData.intermediateTargetMAC, 6);
-        peerInfo.channel = 1;
+        peerInfo.channel = channelNet;
         peerInfo.encrypt = false;
         esp_now_add_peer(&peerInfo);
         esp_now_send(outgoingData.intermediateTargetMAC, (uint8_t *)&outgoingData.transmittedData, sizeof(transmitted_data_t));
@@ -557,7 +559,7 @@ void IRAM_ATTR ZHNetwork::onDataReceive(const uint8_t *mac_addr, const uint8_t *
     criticalProcessSemaphore = false;
 }
 
-uint16_t ZHNetwork::broadcastMessage(const char *data, const uint8_t *target, message_type_t type)
+uint16_t ZHNetwork::broadcastMessage(const char *data, const uint8_t *target, message_type_t type, const bool isText, size_t len)
 {
     outgoing_data_t outgoingData;
     outgoingData.transmittedData.messageType = type;
@@ -565,7 +567,14 @@ uint16_t ZHNetwork::broadcastMessage(const char *data, const uint8_t *target, me
     memcpy(&outgoingData.transmittedData.netName, &netName_, 20);
     memcpy(&outgoingData.transmittedData.originalTargetMAC, target, 6);
     memcpy(&outgoingData.transmittedData.originalSenderMAC, &localMAC, 6);
-    strcpy(outgoingData.transmittedData.message, data);
+
+    if(!isText){
+        memcpy(outgoingData.transmittedData.message, data, len);
+    }else{
+        strcpy(outgoingData.transmittedData.message, data);
+    }
+
+    
     if (key_[0] && outgoingData.transmittedData.messageType == BROADCAST)
         for (uint8_t i{0}; i < strlen(outgoingData.transmittedData.message); ++i)
             outgoingData.transmittedData.message[i] = outgoingData.transmittedData.message[i] ^ key_[i % strlen(key_)];
@@ -607,7 +616,7 @@ uint16_t ZHNetwork::unicastMessage(const char *data, const uint8_t *target, cons
     //si lo que envio es un float dentro de un string y hacemos strcpy, se puede cortar el mensaje si detecta un cero en los datos
     //por eso copiamos con memcpy cuando queremos enviar floats y no cadenas de texto. 
     if(!isText){
-        memcpy(outgoingData.transmittedData.message, data, 6);
+        memcpy(outgoingData.transmittedData.message, data, PAYLOAD_SIZE); //hardcodeado por el momento
     }else{
         strcpy(outgoingData.transmittedData.message, data);
     }

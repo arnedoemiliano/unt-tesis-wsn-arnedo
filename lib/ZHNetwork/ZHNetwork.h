@@ -7,6 +7,8 @@
 #include "esp_wifi.h"
 #include "esp_now.h"
 
+#define PAYLOAD_SIZE 10
+
 
 //#define PRINT_LOG // Uncomment to display to serial port the full operation log.
 
@@ -82,17 +84,22 @@ typedef std::queue<outgoing_data_t> outgoing_queue_t;
 typedef std::queue<incoming_data_t> incoming_queue_t;
 typedef std::queue<waiting_data_t> waiting_queue_t;
 
+
+
 class ZHNetwork
 {
 public:
+    uint8_t channelNet = 1;
+
     ZHNetwork &setOnBroadcastReceivingCallback(on_message_t onBroadcastReceivingCallback);
     ZHNetwork &setOnUnicastReceivingCallback(on_message_t onUnicastReceivingCallback);
     ZHNetwork &setOnConfirmReceivingCallback(on_confirm_t onConfirmReceivingCallback);
 
 
     error_code_t begin(const char *netName = "", const bool gateway = false);
+    //len inicializada con un valor por defecto para zhnetwork que no la necesita. Solo la usa el usuario para el tamaño de los mensajes crudos.
+    uint16_t sendBroadcastMessage(const char *data, const bool isText = true, size_t len=SIZE_MAX); //se considera siempre texto a menos que se especifique lo contrario
 
-    uint16_t sendBroadcastMessage(const char *data);
     uint16_t sendUnicastMessage(const char *data, const uint8_t *target, const bool confirm = false, const bool isText = true); //se considera siempre texto a menos que se especifique lo contrario
 
     void maintenance(void);
@@ -111,6 +118,7 @@ public:
     uint8_t getMaxWaitingTimeBetweenTransmissions(void);
     error_code_t setMaxWaitingTimeForRoutingInfo(const uint16_t maxTimeForRoutingInfoWaiting);
     uint16_t getMaxWaitingTimeForRoutingInfo(void);
+    
 
 private:
     static routing_vector_t routingVector;
@@ -140,7 +148,8 @@ private:
     static void onDataSent(const uint8_t *mac, esp_now_send_status_t status);
     //static void onDataReceive(const uint8_t *mac, const uint8_t *data, int length);
     static void onDataReceive(const uint8_t *mac_addr, const uint8_t *data, int length);
-    uint16_t broadcastMessage(const char *data, const uint8_t *target, message_type_t type);
+    //se agrega valor por defecto en len ya que zhnetwork no la necesita y así sigue funcionando normalmente.
+    uint16_t broadcastMessage(const char *data, const uint8_t *target, message_type_t type, const bool isText = true, size_t len = SIZE_MAX);
     uint16_t unicastMessage(const char *data, const uint8_t *target, const uint8_t *sender, message_type_t type, const bool isText = true);
     on_message_t onBroadcastReceivingCallback;
     on_message_t onUnicastReceivingCallback;
