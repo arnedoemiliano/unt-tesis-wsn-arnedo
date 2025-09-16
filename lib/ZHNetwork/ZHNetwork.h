@@ -8,9 +8,8 @@
 #include "esp_now.h"
 
 #define PAYLOAD_SIZE 10
+#define PRINT_LOG
 
-
-//#define PRINT_LOG // Uncomment to display to serial port the full operation log.
 
 typedef struct
 {
@@ -84,6 +83,18 @@ typedef std::queue<outgoing_data_t> outgoing_queue_t;
 typedef std::queue<incoming_data_t> incoming_queue_t;
 typedef std::queue<waiting_data_t> waiting_queue_t;
 
+enum : uint8_t {
+  MODE_STA    = 0,
+  MODE_AP     = 1,
+  MODE_AP_STA = 2,
+};
+
+typedef struct //Para la verificación ID MAC
+{
+    uint16_t id;
+    uint8_t sender[6];
+} last_message_info_t;
+
 
 
 class ZHNetwork
@@ -96,7 +107,9 @@ public:
     ZHNetwork &setOnConfirmReceivingCallback(on_confirm_t onConfirmReceivingCallback);
 
 
-    error_code_t begin(const char *netName = "", const bool gateway = false);
+    void clearIDMACHistory(void);
+
+    error_code_t begin(uint8_t mode, const char *netName = "");
     //len inicializada con un valor por defecto para zhnetwork que no la necesita. Solo la usa el usuario para el tamaño de los mensajes crudos.
     uint16_t sendBroadcastMessage(const char *data, const bool isText = true, size_t len=SIZE_MAX); //se considera siempre texto a menos que se especifique lo contrario
 
@@ -118,6 +131,7 @@ public:
     uint8_t getMaxWaitingTimeBetweenTransmissions(void);
     error_code_t setMaxWaitingTimeForRoutingInfo(const uint16_t maxTimeForRoutingInfoWaiting);
     uint16_t getMaxWaitingTimeForRoutingInfo(void);
+    const uint8_t* getLocalMAC(void);
     
 
 private:
@@ -132,7 +146,7 @@ private:
     static bool confirmReceivingSemaphore;
     static bool confirmReceiving;
     static uint8_t localMAC[6];
-    static uint16_t lastMessageID[10];
+    //static uint16_t lastMessageID[10];
     static char netName_[20];
     static char key_[20];
 

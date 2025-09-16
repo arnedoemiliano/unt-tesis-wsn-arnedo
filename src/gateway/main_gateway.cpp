@@ -18,6 +18,7 @@ SPDX-License-Identifier: MIT
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #define MAX_ATTEMPT_HTTP_LOAD 5 // número maximo de intentos de subida http antes de reiniciar wifi
+#define ATTEMPTS_ANNOUNC 10
 const uint16_t V_FULL  = 1600;   // a reposo / carga completa
 const uint16_t V_EMPTY = 1200;   // bajo carga ligera (protección antes de 3.0V)
 
@@ -41,7 +42,8 @@ uint8_t channelwifi = 1;
 void onUnicastReceiving(const char *data, const uint8_t *sender);
 static void ControlTask(void *);
 static void MaintTask(void *);                                                 // Ejecuta maintenance que coloca paquetes en cola
-static void BridgeTask(void *);                                                // Saca paquetes de la cola y los envia por HTTP
+static void BridgeTask(void *);
+static void MonitorTask(void *);                                                // Saca paquetes de la cola y los envia por HTTP
 uint16_t sendToDatacake(const uint8_t *mac, float temperature, float battery, uint32_t seq); // conversión a JSON y envío POST
 uint8_t findChannel(void);
 
@@ -69,30 +71,14 @@ void setup()
 {
 
     Serial.begin(115200);
-    myNet.begin("ZHNetwork", /*ap+sta*/ false);              //(nombre de la red, modo AP al inicio para channel 1)
+    myNet.begin(MODE_AP, "ZHNetwork");              //(nombre de la red, modo AP al inicio para channel 1)
     myNet.setOnUnicastReceivingCallback(onUnicastReceiving); // asignamos la funcion de callback para
     queuePackets = xQueueCreate(16, sizeof(Pkt));            // cuando llega un mensaje (recibiendo)
-    xTaskCreate(MaintTask, "MaintTask", 4096, nullptr, 3, &xHandleMaint);
-    xTaskCreate(BridgeTask, "BridgeTask", 6144, nullptr, 5, &xHandleBridge);
-    xTaskCreate(ControlTask, "ControlTask", 4096, nullptr, 2, &xHandleControl);
-    // WiFi.begin(ssid,password);
-    // Serial.println("\nConnecting");
-
-    /* while(WiFi.status() != WL_CONNECTED){
-        Serial.print(".");
-        delay(100);
-    } */
-    /* Serial.println("\n***Conectado a la red Wi-Fi***");
-    Serial.printf("STA channel = %d\n", WiFi.channel());
-    */
-    /* client.setInsecure();
-    http.setReuse(true); // habilita HTTP keep-alive
-    if(http.begin(client, "https://api.datacake.co/integrations/api/edb2f2b0-d238-4c0c-8b50-ee2c5f10c142/")){
-        http.addHeader("Content-Type", "application/json");
-        Serial.print("***HTTP begin funciona, conexión inicializada***");
-    }else{
-        Serial.println("***No se pudo establecer la conexión HTTP***");
-    }; */
+    xTaskCreate(MaintTask, "MaintTask", 3268, nullptr, 4, &xHandleMaint);
+    xTaskCreate(BridgeTask, "BridgeTask", 5352, nullptr, 5, &xHandleBridge);
+    xTaskCreate(ControlTask, "ControlTask", 2083, nullptr, 3, &xHandleControl);
+    xTaskCreate(MonitorTask, "MonitorTask", 2048, nullptr,2,NULL);
+    
 }
 
 // === Loop ==================================================================================== //
@@ -102,6 +88,22 @@ void loop()
 }
 
 // === Tasks =================================================================================== //
+
+static void MonitorTask(void *){
+    
+    for (;;) {
+        Serial.printf("ControlTask: %u words\n",
+            uxTaskGetStackHighWaterMark(xHandleControl));
+        Serial.printf("BridgeTask: %u words\n",
+            uxTaskGetStackHighWaterMark(xHandleBridge));
+        Serial.printf("MaintTask: %u words\n",
+            uxTaskGetStackHighWaterMark(xHandleMaint));
+        vTaskDelay(pdMS_TO_TICKS(7000)); // cada 7 segundos
+    }
+
+}
+
+
 
 // encuentra la red, obtiene el channel, lo avisa a los nodos y se bloquea
 static void ControlTask(void *)
@@ -148,15 +150,15 @@ static void ControlTask(void *)
         case ANOUNC:
         {
             PayloadSync payloadsync{1, 0x0A, channelwifi, 0};
-            for (int i = 0; i < 10; i++)
+            for (int i = 0; i < ATTEMPTS_ANNOUNC; i++)
             {
                 payloadsync.seq = i;
-                // ARREGLAR LA FUNCION BROADCAST(), COPIA CON STRCPY!!!!!
                 // avisamos que son bytes crudos y la cantidad de los mismos a la librería
                 myNet.sendBroadcastMessage((char *)&payloadsync, false, sizeof(payloadsync));
                 Serial.printf("Envio de sync message n°: %i\n", i);
-                vTaskDelay(pdMS_TO_TICKS(100));
+                vTaskDelay(pdMS_TO_TICKS(110));
             }
+            vTaskDelay(pdMS_TO_TICKS(500));
             state = CONMUT;
             break;
         }
@@ -164,8 +166,9 @@ static void ControlTask(void *)
         {
             vTaskSuspend(xHandleMaint); // paramos maintenance()
             esp_now_deinit();           // paramos espnow
-
-            myNet.begin("ZHNetwork", /*ap+sta*/ true); // reiniciamos toda la red
+            myNet.channelNet = channelwifi;
+            myNet.begin(MODE_AP_STA, "ZHNetwork"); // reiniciamos toda la red en modo AP+STA
+            
             myNet.setOnUnicastReceivingCallback(onUnicastReceiving);
             WiFi.begin(ssid, password);
             Serial.println("Conectando a la red Wi-Fi...\n");
@@ -177,8 +180,6 @@ static void ControlTask(void *)
             }
             vTaskResume(xHandleMaint); // reiniciamos maintenance()
 
-            // AQUI DEBERÍA IR UNA VERIFICACIÓN DE SI EL CANAL SACADO EN SCAN COINCIDE CON EL ACTUAL
-            // SI NO COINCIDE, DEBEMOS VOLVER A EJECUTAR ESTA TAREA
             if (channelwifi != WiFi.channel())
             {
                 Serial.println("Error inesperado, el canal encontrado no coincide. Reiniciando el proceso...");
@@ -276,8 +277,6 @@ static void BridgeTask(void *)
                 xTaskNotifyGive(xHandleControl);
                 break; //volvemos al for externo
             }
-            // AQUI SI HAY UN PROBLEMA CON LA SUBIDA DE DATOS AL SERVIDOR O CONEXIÓN, DEBEMOS REACTIVAR CONTROLTASK!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-            // AHORA sendtodatacake DEVUELVE HTTP CODE. VER SI SE HACE CON ESO LA DETECCION DE PROBLEMAS O SI SE PUEDE CON LA COLA AUNQUE NO CREO
         }
     }
 }

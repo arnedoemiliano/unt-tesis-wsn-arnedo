@@ -12,9 +12,21 @@ bool ZHNetwork::confirmReceivingSemaphore{false};
 bool ZHNetwork::confirmReceiving{false};
 char ZHNetwork::netName_[20]{0};
 char ZHNetwork::key_[20]{0};
-uint8_t ZHNetwork::localMAC[6]{0};
-uint16_t ZHNetwork::lastMessageID[10]{0};
 
+//uint16_t ZHNetwork::lastMessageID[10]{0};
+
+uint8_t ZHNetwork::localMAC[6]{0};
+
+static last_message_info_t lastMessageInfo[10]{0};
+
+void ZHNetwork::clearIDMACHistory(void)
+{
+    criticalProcessSemaphore = true;
+    memset(lastMessageInfo, 0, sizeof lastMessageInfo);
+    criticalProcessSemaphore = false;
+    Serial.println("***Se limpió el historial de IDs para deduplicación***");
+    return;
+}
 
 ZHNetwork &ZHNetwork::setOnBroadcastReceivingCallback(on_message_t onBroadcastReceivingCallback)
 {
@@ -34,7 +46,7 @@ ZHNetwork &ZHNetwork::setOnConfirmReceivingCallback(on_confirm_t onConfirmReceiv
     return *this;
 }
 
-error_code_t ZHNetwork::begin(const char *netName, const bool gateway)
+error_code_t ZHNetwork::begin(uint8_t mode, const char *netName)
 {
 
     randomSeed(esp_random());
@@ -44,13 +56,48 @@ error_code_t ZHNetwork::begin(const char *netName, const bool gateway)
 #ifdef PRINT_LOG
     Serial.begin(115200);
 #endif
-    WiFi.mode(gateway ? WIFI_AP_STA : WIFI_STA); //gateway=true -> WIFI_AP_STA, gateway = false -> WIFI_STA
+
+    switch (mode)
+    {
+    case 0:
+        WiFi.mode(WIFI_STA);
+        break;
+    case 1:
+        WiFi.mode(WIFI_AP);
+        break;
+    case 2:
+        WiFi.mode(WIFI_AP_STA);
+        break;
+    default: /* ignorar o fallback */
+        break;
+    }
+
     esp_now_init();
-    esp_wifi_set_channel(channelNet, WIFI_SECOND_CHAN_NONE); //forzamos canal 1
-    esp_wifi_get_mac(gateway ? (wifi_interface_t)ESP_IF_WIFI_AP : (wifi_interface_t)ESP_IF_WIFI_STA, localMAC);
+    clearIDMACHistory();
+    esp_wifi_set_channel(channelNet, WIFI_SECOND_CHAN_NONE); // forzamos canal 1
+
+    switch (mode)
+    {
+    case 0:
+        esp_wifi_get_mac((wifi_interface_t)ESP_IF_WIFI_STA, localMAC);
+        break;
+    case 1:
+        esp_wifi_get_mac((wifi_interface_t)ESP_IF_WIFI_AP, localMAC);
+        break;
+    case 2:
+        esp_wifi_get_mac((wifi_interface_t)ESP_IF_WIFI_AP, localMAC);
+        break;
+    default: /* ignorar o fallback */
+        break;
+    }
+    String mac_actual;
+    mac_actual = macToString(localMAC);
+    Serial.print("La MAC actual es: ");
+    Serial.println(mac_actual);
+    // esp_wifi_get_mac(gateway ? (wifi_interface_t)ESP_IF_WIFI_AP : (wifi_interface_t)ESP_IF_WIFI_STA, localMAC);
     esp_now_register_send_cb(onDataSent);
     esp_now_register_recv_cb(onDataReceive);
-    
+
     return SUCCESS;
 }
 
@@ -70,7 +117,7 @@ void ZHNetwork::maintenance()
     {
         sentMessageSemaphore = false;
         confirmReceivingSemaphore = false;
-        if (confirmReceiving) // 
+        if (confirmReceiving) //
         {
 #ifdef PRINT_LOG
             Serial.println(F("OK."));
@@ -136,6 +183,7 @@ void ZHNetwork::maintenance()
         peerInfo.encrypt = false;
         esp_now_add_peer(&peerInfo);
         esp_now_send(outgoingData.intermediateTargetMAC, (uint8_t *)&outgoingData.transmittedData, sizeof(transmitted_data_t));
+
         lastMessageSentTime = millis();
         sentMessageSemaphore = true;
 
@@ -180,7 +228,7 @@ void ZHNetwork::maintenance()
         criticalProcessSemaphore = false;
         bool forward{false};
         bool routingUpdate{false};
-        switch (incomingData.transmittedData.messageType) //decide que hacer con el mensaje entrante segun su tipo
+        switch (incomingData.transmittedData.messageType) // decide que hacer con el mensaje entrante segun su tipo
         {
         case BROADCAST:
 #ifdef PRINT_LOG
@@ -214,11 +262,12 @@ void ZHNetwork::maintenance()
                     if (key_[0])
                         for (uint8_t i{0}; i < strlen(incomingData.transmittedData.message); ++i)
                             incomingData.transmittedData.message[i] = incomingData.transmittedData.message[i] ^ key_[i % strlen(key_)];
-                    onUnicastReceivingCallback(incomingData.transmittedData.message, incomingData.transmittedData.originalSenderMAC); //da los valores reales a la funcion de callback
+                    onUnicastReceivingCallback(incomingData.transmittedData.message, incomingData.transmittedData.originalSenderMAC); // da los valores reales a la funcion de callback
                 }
                 /* Solo para test: avisar cuando el mensaje no haya sido recibido por el originalSender (haya sido reenviado) */
                 /*Solamente lo activará el gateway porque este siempre es el originalTargetMAC*/
-                if (memcmp(incomingData.transmittedData.originalSenderMAC,incomingData.intermediateSenderMAC,6)!=0){
+                if (memcmp(incomingData.transmittedData.originalSenderMAC, incomingData.intermediateSenderMAC, 6) != 0)
+                {
                     Serial.println("El mensaje recibido fue retransmitido al menos en el último salto");
                 }
             }
@@ -545,15 +594,38 @@ void IRAM_ATTR ZHNetwork::onDataReceive(const uint8_t *mac_addr, const uint8_t *
             return;
         }
     }
-    for (uint8_t i{0}; i < sizeof(lastMessageID) / 2; ++i)
-        if (lastMessageID[i] == incomingData.transmittedData.messageID)
+
+    // Busqueda de mensajes repetidos por ID confirmados por misma MAC en el array de estructuras tipo last_message_info_t
+    uint8_t N = (sizeof(lastMessageInfo)) / sizeof(lastMessageInfo[0]); /*10*/
+
+    for (size_t i = 0; i < N; i++)
+    {
+        if (lastMessageInfo[i].id == incomingData.transmittedData.messageID)
         {
-            criticalProcessSemaphore = false;
-            return;
+
+            if (!(memcmp(lastMessageInfo[i].sender, incomingData.transmittedData.originalSenderMAC, sizeof(incomingData.transmittedData.originalSenderMAC))))
+            {
+                Serial.println("***Se descartó el mensaje por repetición de ID+MAC***");
+                Serial.print("ID=");
+                Serial.print(incomingData.transmittedData.messageID);
+                Serial.print("MAC=");
+                Serial.println(macToString(incomingData.transmittedData.originalSenderMAC));
+                criticalProcessSemaphore = false;
+                return;
+            }
         }
-    for (uint8_t i{sizeof(lastMessageID) / 2 - 1}; i >= 1; --i)
-        lastMessageID[i] = lastMessageID[i - 1];
-    lastMessageID[0] = incomingData.transmittedData.messageID;
+    }
+
+    // Rotación del array y agregado de último par ID-MAC más reciente.
+    if (N > 1)
+    {
+        memmove(&lastMessageInfo[1], &lastMessageInfo[0],
+                (N - 1) * sizeof lastMessageInfo[0]);
+    }
+
+    lastMessageInfo[0].id = incomingData.transmittedData.messageID;
+    memcpy(lastMessageInfo[0].sender, incomingData.transmittedData.originalSenderMAC, 6); // hardcodeado, la mac siempre es 6 bytes
+
     memcpy(&incomingData.intermediateSenderMAC, mac_addr, 6);
     queueForIncomingData.push(incomingData);
     criticalProcessSemaphore = false;
@@ -568,13 +640,15 @@ uint16_t ZHNetwork::broadcastMessage(const char *data, const uint8_t *target, me
     memcpy(&outgoingData.transmittedData.originalTargetMAC, target, 6);
     memcpy(&outgoingData.transmittedData.originalSenderMAC, &localMAC, 6);
 
-    if(!isText){
+    if (!isText)
+    {
         memcpy(outgoingData.transmittedData.message, data, len);
-    }else{
+    }
+    else
+    {
         strcpy(outgoingData.transmittedData.message, data);
     }
 
-    
     if (key_[0] && outgoingData.transmittedData.messageType == BROADCAST)
         for (uint8_t i{0}; i < strlen(outgoingData.transmittedData.message); ++i)
             outgoingData.transmittedData.message[i] = outgoingData.transmittedData.message[i] ^ key_[i % strlen(key_)];
@@ -613,15 +687,17 @@ uint16_t ZHNetwork::unicastMessage(const char *data, const uint8_t *target, cons
     memcpy(&outgoingData.transmittedData.originalTargetMAC, target, 6);
     memcpy(&outgoingData.transmittedData.originalSenderMAC, sender, 6);
 
-    //si lo que envio es un float dentro de un string y hacemos strcpy, se puede cortar el mensaje si detecta un cero en los datos
-    //por eso copiamos con memcpy cuando queremos enviar floats y no cadenas de texto. 
-    if(!isText){
-        memcpy(outgoingData.transmittedData.message, data, PAYLOAD_SIZE); //hardcodeado por el momento
-    }else{
+    // si lo que envio es un float dentro de un string y hacemos strcpy, se puede cortar el mensaje si detecta un cero en los datos
+    // por eso copiamos con memcpy cuando queremos enviar floats y no cadenas de texto.
+    if (!isText)
+    {
+        memcpy(outgoingData.transmittedData.message, data, PAYLOAD_SIZE); // hardcodeado por el momento
+    }
+    else
+    {
         strcpy(outgoingData.transmittedData.message, data);
     }
 
-    
     if (key_[0] && macToString(outgoingData.transmittedData.originalSenderMAC) == macToString(localMAC) && outgoingData.transmittedData.messageType != DELIVERY_CONFIRM_RESPONSE)
         for (uint8_t i{0}; i < strlen(outgoingData.transmittedData.message); ++i)
             outgoingData.transmittedData.message[i] = outgoingData.transmittedData.message[i] ^ key_[i % strlen(key_)];
@@ -694,4 +770,9 @@ uint16_t ZHNetwork::unicastMessage(const char *data, const uint8_t *target, cons
     Serial.println(F(" added to queue."));
 #endif
     return outgoingData.transmittedData.messageID;
+}
+
+const uint8_t *ZHNetwork::getLocalMAC()
+{
+    return localMAC;
 }
